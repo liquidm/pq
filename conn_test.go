@@ -133,7 +133,7 @@ func TestOpenURL(t *testing.T) {
 		txn.Rollback()
 	}
 	testURL("lqm-postgres://")
-	//testURL("lqm-postgresql://") todo uncomment
+	testURL("lqm-postgresql://")
 }
 
 const pgpass_file = "/tmp/pqgotest_pgpass"

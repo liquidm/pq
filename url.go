@@ -35,7 +35,7 @@ func ParseURL(url string) (string, error) {
 		return "", err
 	}
 
-	if u.Scheme != "lqm-postgres" && u.Scheme != "postgresql" {
+	if u.Scheme != "lqm-postgres" && u.Scheme != "lqm-postgresql" {
 		return "", fmt.Errorf("invalid connection protocol: %s", u.Scheme)
 	}
 
