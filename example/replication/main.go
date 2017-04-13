@@ -47,23 +47,20 @@ func main() {
 	default:
 		fmt.Printf("Starting streaming %s from 0/0\n", slot)
 
-		conn.StartLogicalStream(slot, "0/0", 5*time.Second, func(n *pq.Notice) { fmt.Printf("Got notice: %s\n", n.Error) })
+		conn.StartLogicalStream(slot, pq.StrToLogPos("0/0"), 5*time.Second, func(n *pq.Notice) { fmt.Printf("Got notice: %s\n", n.Error) })
 	}
 
-	for {
-		select {
-		case e := <-conn.EventsChannel():
-			payload := &decoderbufs.RowMessage{}
+	for e := range conn.EventsChannel() {
+		payload := &decoderbufs.RowMessage{}
 
-			// The first int64 of message payload is the length of the following protobuf content.
-			// See: https://github.com/liquidm/decoderbufs/blob/master/src/decoderbufs.c#L534-L537
-			err := proto.Unmarshal(e.Payload[8:], payload)
-			if err != nil {
-				panic(err)
-			}
-
-			fmt.Printf("Got event: %d, %s\n", pq.XLogPosIntToStr(e.LogPos), payload)
+		// The first int64 of message payload is the length of the following protobuf content.
+		// See: https://github.com/liquidm/decoderbufs/blob/master/src/decoderbufs.c#L534-L537
+		err := proto.Unmarshal(e.Payload[8:], payload)
+		if err != nil {
+			panic(err)
 		}
+
+		fmt.Printf("Got event: %d, %s\n", e.LogPos, payload)
 	}
 
 }
