@@ -10,7 +10,7 @@ import (
 )
 
 type ReplicationEvent struct {
-	LogPos  int64
+	LogPos  LogPos
 	Payload []byte
 }
 
@@ -25,8 +25,8 @@ type ReplicationConn struct {
 
 	events chan *ReplicationEvent
 
-	writeLogPos int64
-	flushLogPos int64
+	writeLogPos LogPos
+	flushLogPos LogPos
 
 	closeChan  chan struct{}
 	closedChan chan struct{}
@@ -65,10 +65,17 @@ type IdentifySystemMsg struct {
 	Timeline int64
 
 	// xlogpos - Current xlog write location.
-	XLogPos string
+	XLogPos LogPos
 
 	// dbname - Database connected to.
 	DBName string
+}
+
+type CreateLogicalReplicationSlotResult struct {
+	SlotName     string
+	XLogPos      LogPos
+	SnapshotName string
+	OutputPlugin string
 }
 
 func (r *ReplicationConn) IdentifySystem() (*IdentifySystemMsg, error) {
@@ -96,25 +103,36 @@ func (r *ReplicationConn) IdentifySystem() (*IdentifySystemMsg, error) {
 	}
 
 	systemInfo := &IdentifySystemMsg{
-		SystemId: string(values[0].(string)),
+		SystemId: values[0].(string),
 		Timeline: values[1].(int64),
-		XLogPos:  string(values[2].(string)),
-		DBName:   string(values[3].(string)),
+		XLogPos:  StrToLogPos(values[2].(string)),
+		DBName:   values[3].(string),
 	}
 
 	return systemInfo, nil
 }
 
-func (r *ReplicationConn) CreateLogicalReplicationSlot(name string, outputPlugin string) (string, error) {
+func (r *ReplicationConn) CreateLogicalReplicationSlot(name string, outputPlugin string) (*CreateLogicalReplicationSlotResult, error) {
 	if r.streaming {
-		return "", errors.New("replication stream already running")
+		return nil, errors.New("replication stream already running")
 	}
 
 	if r.closed {
-		return "", errors.New("can't run on already closed connection")
+		return nil, errors.New("can't run on already closed connection")
 	}
 
-	return r.sendReplicationQuery(fmt.Sprintf("CREATE_REPLICATION_SLOT %s LOGICAL %s", name, outputPlugin))
+	values, err := r.sendReplicationQuery(fmt.Sprintf("CREATE_REPLICATION_SLOT %s LOGICAL %s", name, outputPlugin), 4)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &CreateLogicalReplicationSlotResult{
+		SlotName:     values[0].(string),
+		XLogPos:      StrToLogPos(values[1].(string)),
+		SnapshotName: values[2].(string),
+		OutputPlugin: values[3].(string),
+	}, nil
 }
 
 // Drops replication slot.
@@ -128,38 +146,27 @@ func (r *ReplicationConn) DropReplicationSlot(name string) error {
 		return errors.New("can't run on already closed connection")
 	}
 
-	_, err := r.sendReplicationQuery(fmt.Sprintf("DROP_REPLICATION_SLOT %s", name))
+	_, err := r.sendReplicationQuery(fmt.Sprintf("DROP_REPLICATION_SLOT %s", name), 0)
 	return err
 }
 
-func (r *ReplicationConn) sendReplicationQuery(q string) (string, error) {
-	err := r.sendQuery(q)
-
+func (r *ReplicationConn) sendReplicationQuery(q string, rowsCount int) ([]driver.Value, error) {
+	rows, err := r.cn.simpleQuery(q)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	var pos string
+	values := make([]driver.Value, rowsCount)
 
-	for {
-		typ := r.cn.recv1Buf(r.rbuf)
-
-		switch typ {
-		case 'E':
-			err = parseError(r.rbuf)
-		case 'C':
-		case 'T':
-			r.cn.recv1Buf(r.rbuf)
-			r.rbuf.next(6)
-			r.rbuf.string()
-			r.rbuf.next(3)
-			pos = r.rbuf.string()
-		case 'Z':
-			return pos, err
-		default:
-			return "", fmt.Errorf("unknown response for ... %q", typ)
+	if rowsCount > 0 {
+		err = rows.Next(values)
+		if err != nil {
+			return nil, err
 		}
 	}
+	rows.Close()
+
+	return values, nil
 }
 
 func (r *ReplicationConn) sendQuery(q string) error {
@@ -174,7 +181,7 @@ func (r *ReplicationConn) send(b *writeBuf) (err error) {
 	return err
 }
 
-func (r *ReplicationConn) StartLogicalStream(slotName string, pos string, commitInterval time.Duration, noticeCallback NoticeCallback) error {
+func (r *ReplicationConn) StartLogicalStream(slotName string, pos LogPos, commitInterval time.Duration, noticeCallback NoticeCallback) error {
 	if r.streaming {
 		return errors.New("replication stream already running")
 	}
@@ -240,7 +247,7 @@ recvMessagesLoop:
 
 				copy(tt, *r.rbuf)
 
-				mStartLogPos := int64(r.rbuf.int64())
+				mStartLogPos := LogPos(r.rbuf.int64())
 
 				r.rbuf.next(16)
 
@@ -325,7 +332,7 @@ func (r *ReplicationConn) EventsChannel() <-chan *ReplicationEvent {
 }
 
 // Commit error will not stop replication stream
-func (r *ReplicationConn) MarkFlushLogPos(flushPos int64) error {
+func (r *ReplicationConn) MarkFlushLogPos(flushPos LogPos) error {
 	if !r.streaming {
 		return errors.New("Not in streaming mode")
 	} else if r.commitInterval > 0 {
@@ -351,8 +358,8 @@ func (r *ReplicationConn) commitLogPos() error {
 	r.wbuf.buf = r.wbuf.buf[:5]
 
 	r.wbuf.byte('r')
-	r.wbuf.int64(r.writeLogPos)
-	r.wbuf.int64(r.flushLogPos)
+	r.wbuf.int64(int64(r.writeLogPos))
+	r.wbuf.int64(int64(r.flushLogPos))
 	r.wbuf.int64(0)
 	r.wbuf.int64(time.Now().UnixNano()/1000 - 946684800000000) //microseconds since 2000-01-01 00:00:00
 	r.wbuf.byte(0)
@@ -408,16 +415,19 @@ func parseNotice(r *readBuf) *Notice {
 	return &Notice{parseError(r)}
 }
 
-// Transforms int64 log position value into its string representation.
-func XLogPosIntToStr(xLogPos int64) string {
-	high := uint32(xLogPos >> 32)
-	low := uint32(xLogPos)
+//LogPos represents position in PostgreSQL binlog
+type LogPos uint64
+
+//Converts position to its textual representation (e.g. 17/A4C41EC0)
+func (v LogPos) String() string {
+	high := uint32(v >> 32)
+	low := uint32(v)
 	return fmt.Sprintf("%X/%X", high, low)
 }
 
-// Transforms string representation of log position value into int64.
-func XLogPosStrToInt(xLogPos string) int64 {
+//Converts textual representation (e.g. 17/A4C41EC0) to LogPos
+func StrToLogPos(str string) LogPos {
 	var high, low uint32
-	fmt.Sscanf(xLogPos, "%X/%X", &high, &low)
-	return (int64(high) << 32) | int64(low)
+	fmt.Sscanf(str, "%X/%X", &high, &low)
+	return LogPos(int64(high)<<32 | int64(low))
 }

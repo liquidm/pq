@@ -44,14 +44,14 @@ func closeTestConnWithTable(t *testing.T, db *sql.DB) {
 	db.Close()
 }
 
-func createTestReplicationSlot(t *testing.T, r *ReplicationConn) string {
+func createTestReplicationSlot(t *testing.T, r *ReplicationConn) *CreateLogicalReplicationSlotResult {
 	// r.DropReplicationSlot(replicationSlot)
-	pos, err := r.CreateLogicalReplicationSlot(replicationSlot, "test_decoding")
+	res, err := r.CreateLogicalReplicationSlot(replicationSlot, "test_decoding")
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 
-	return pos
+	return res
 }
 
 func dropTestReplicationSlot(t *testing.T, r *ReplicationConn) {
@@ -140,13 +140,13 @@ func TestReplicationStartLogicalStream(t *testing.T) {
 		rCleanup.Close()
 	}()
 
-	pos, err := r.CreateLogicalReplicationSlot("repl_test", "test_decoding")
+	res, err := r.CreateLogicalReplicationSlot("repl_test", "test_decoding")
 
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	r.StartLogicalStream("repl_test", pos, 0, nil)
+	r.StartLogicalStream("repl_test", res.XLogPos, 0, nil)
 
 	db.Exec("INSERT INTO repl VALUES (0)")
 	db.Exec("INSERT INTO repl VALUES (1)")
@@ -188,13 +188,13 @@ func TestReplicationManualCommit(t *testing.T) {
 		rCleanup.Close()
 	}()
 
-	pos, err := r.CreateLogicalReplicationSlot("repl_test", "test_decoding")
+	res, err := r.CreateLogicalReplicationSlot("repl_test", "test_decoding")
 
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	r.StartLogicalStream("repl_test", pos, -1, nil)
+	r.StartLogicalStream("repl_test", res.XLogPos, -1, nil)
 
 	db.Exec("INSERT INTO repl VALUES (0)")
 	db.Exec("INSERT INTO repl VALUES (1)")
@@ -216,7 +216,7 @@ func TestReplicationManualCommit(t *testing.T) {
 
 	r = openTestReplicationConn(t)
 
-	r.StartLogicalStream("repl_test", pos, -1, nil)
+	r.StartLogicalStream("repl_test", res.XLogPos, -1, nil)
 
 	events, err = readNTestEvents(r, 3)
 
@@ -246,13 +246,13 @@ func TestReplicationAutocommit(t *testing.T) {
 		rCleanup.Close()
 	}()
 
-	pos, err := r.CreateLogicalReplicationSlot("repl_test", "test_decoding")
+	res, err := r.CreateLogicalReplicationSlot("repl_test", "test_decoding")
 
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	r.StartLogicalStream("repl_test", pos, 0, nil)
+	r.StartLogicalStream("repl_test", res.XLogPos, 0, nil)
 
 	db.Exec("INSERT INTO repl VALUES (0)")
 	db.Exec("INSERT INTO repl VALUES (1)")
@@ -274,7 +274,7 @@ func TestReplicationAutocommit(t *testing.T) {
 
 	r = openTestReplicationConn(t)
 
-	r.StartLogicalStream("repl_test", pos, 0, nil)
+	r.StartLogicalStream("repl_test", res.XLogPos, 0, nil)
 
 	db.Exec("INSERT INTO repl VALUES (3)")
 
